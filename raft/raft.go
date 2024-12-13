@@ -297,7 +297,7 @@ func (r *Raft) tick() {
 		}
 	} else {
 		r.electionElapsed++
-		if r.electionElapsed >= r.electionTimeout {
+		if r.electionElapsed >= r.randElectionTimeout {
 			r.electionElapsed = 0
 			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgHup})
 		}
@@ -320,6 +320,7 @@ func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Term++
 	r.Vote = r.id
+	r.votes = make(map[uint64]bool)
 	r.votes[r.id] = true
 }
 
@@ -405,10 +406,10 @@ func (r *Raft) stepLeader(m pb.Message) {
 }
 func (r *Raft) handleHup() {
 	// Your Code Here (2A).
+	r.becomeCandidate()
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
 	} else {
-		r.becomeCandidate()
 		for id := range r.Prs {
 			if id != r.id {
 				r.sendRequestVote(id)
