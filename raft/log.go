@@ -98,13 +98,13 @@ func (l *RaftLog) getEntries(start uint64, end uint64) []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled+1:]
+	return l.getEntries(l.stabled+1, 0)
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return l.entries[l.applied+1 : l.committed+1]
+	return l.getEntries(l.applied+1, l.committed+1)
 }
 
 // LastIndex return the last index of the log entries
@@ -120,11 +120,16 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i < l.dummyIndex {
-		return 0, ErrCompacted
+	/*if i < l.dummyIndex {
+		return l.entries[i-l.dummyIndex].Term, ErrCompacted
 	}
 	if i > l.LastIndex() {
-		return 0, ErrUnavailable
+		return l.entries[l.LastIndex()-l.dummyIndex].Term, ErrUnavailable
 	}
-	return l.entries[i-l.dummyIndex].Term, nil
+	return l.entries[i-l.dummyIndex].Term, nil*/
+	if i >= l.dummyIndex {
+		return l.entries[i-l.dummyIndex].Term, nil
+	}
+	term, err := l.storage.Term(i)
+	return term, err
 }

@@ -468,8 +468,9 @@ func TestLeaderAcknowledgeCommit2AB(t *testing.T) {
 				r.Step(acceptAndReply(m))
 			}
 		}
-
+		t.Logf("#%d, committed = %v, li = %v", i, r.RaftLog.committed, li)
 		if g := r.RaftLog.committed > li; g != tt.wack {
+
 			t.Errorf("#%d: ack commit = %v, want %v", i, g, tt.wack)
 		}
 	}
@@ -747,7 +748,8 @@ func TestLeaderSyncFollowerLog2AB(t *testing.T) {
 		n.send(pb.Message{From: 3, To: 1, MsgType: pb.MessageType_MsgRequestVoteResponse, Term: term + 1})
 
 		n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
-
+		//t.Logf("lead: %+v\n", lead.RaftLog)
+		//t.Logf("follower: %+v\n", follower.RaftLog)
 		if g := diffu(ltoa(lead.RaftLog), ltoa(follower.RaftLog)); g != "" {
 			t.Errorf("#%d: log diff:\n%s", i, g)
 		}
