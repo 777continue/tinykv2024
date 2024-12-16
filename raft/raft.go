@@ -224,9 +224,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 }
 func (r *Raft) sendAppendEntriesResponse(to uint64, reject bool, idx uint64) {
 	// Your Code Here (2A).
-	if idx == 0 {
-		idx = r.RaftLog.LastIndex()
-	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      to,
@@ -352,6 +349,9 @@ func (r *Raft) Step(m pb.Message) error {
 		//fmt.Printf("r.Term = %d \n", r.Term)
 		r.becomeFollower(m.Term, None)
 	}
+	if m.Term != None && m.Term < r.Term {
+		return nil
+	}
 	/*v := reflect.ValueOf(m)
 	t := v.Type()
 	for i := 0; i < v.NumField(); i++ {
@@ -382,7 +382,7 @@ func (r *Raft) stepFollower(m pb.Message) {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgAppend:
 		if m.Term == r.Term {
-			r.becomeFollower(m.Term, None)
+			r.becomeFollower(m.Term, m.From)
 		}
 		r.handleAppendEntries(m)
 	}
@@ -397,7 +397,7 @@ func (r *Raft) stepCandidate(m pb.Message) {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		if m.Term == r.Term {
-			r.becomeFollower(m.Term, None)
+			r.becomeFollower(m.Term, m.From)
 		}
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVoteResponse:
@@ -415,6 +415,9 @@ func (r *Raft) stepLeader(m pb.Message) {
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendEntriesResponse(m)
 	case pb.MessageType_MsgAppend:
+		if m.Term == r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
@@ -526,13 +529,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	firstIndex := lg.dummyIndex
 	lastIndex := lg.LastIndex()
 	if m.Index > lastIndex {
-		r.sendAppendEntriesResponse(m.From, true, 0)
+		r.sendAppendEntriesResponse(m.From, true, lg.LastIndex())
 		return
 	}
 	localTerm, _ := lg.Term(m.Index)
 	if localTerm != m.LogTerm {
+		//fmt.Printf("Idx = %d,  localTerm = %d\n", m.Index, localTerm)
 		for _, ent := range lg.entries {
 			if ent.Term == localTerm {
+				//fmt.Printf("ent.Index = %d lastIndex = %d dummyIndex = %d\n", ent.Index, lastIndex, firstIndex)
 				r.sendAppendEntriesResponse(m.From, true, ent.Index-1)
 				return
 			}
@@ -567,7 +572,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	if m.Commit > lg.committed {
 		lg.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
 	}
-	r.sendAppendEntriesResponse(m.From, false, 0)
+	r.sendAppendEntriesResponse(m.From, false, lg.LastIndex())
 }
 
 // handleAppendEntriesResponse handle AppendEntries RPC response
