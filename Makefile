@@ -20,6 +20,8 @@ PACKAGES            := $$($(PACKAGE_LIST))
 # Targets
 .PHONY: clean test proto kv scheduler dev
 
+clean:
+	$(TEST_CLEAN)
 default: kv scheduler
 
 dev: default test
