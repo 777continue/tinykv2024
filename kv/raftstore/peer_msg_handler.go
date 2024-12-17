@@ -15,6 +15,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
@@ -77,11 +78,32 @@ func (d *peerMsgHandler) applyEntry(entry eraftpb.Entry, kvWB *engine_util.Write
 		log.Errorf("unmarshal raft command error %v", err)
 	}
 	if raftReq.AdminRequest != nil {
+		resp, kvWB := d.processAdminCmd(raftReq, kvWB)
+		d.processCallBack(resp, &entry)
+		return kvWB
+	} else {
+		resp, kvWB := d.processCommonCmd(raftReq, kvWB)
+		d.processCallBack(resp, &entry)
+		return kvWB
 	}
-	resp, kvWB := d.processCommonCmd(raftReq, kvWB)
-	d.processCallBack(resp, &entry)
-	return kvWB
 }
+
+func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
+	adminReq := raftReq.AdminRequest
+	switch adminReq.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		// 要压缩的日志大于上次压缩到的最后一条日志
+		if adminReq.CompactLog.CompactIndex > d.peerStorage.truncatedIndex() {
+			d.peerStorage.applyState.TruncatedState = &raft_serverpb.RaftTruncatedState{
+				Index: adminReq.CompactLog.CompactIndex,
+				Term:  adminReq.CompactLog.CompactTerm,
+			}
+			d.ScheduleCompactLog(adminReq.CompactLog.CompactIndex)
+		}
+	}
+	return nil, kvWB
+}
+
 func (d *peerMsgHandler) processCommonCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
 	reqs := raftReq.Requests
 	resp := &raft_cmdpb.RaftCmdResponse{
@@ -129,6 +151,9 @@ func (d *peerMsgHandler) processCommonCmd(raftReq *raft_cmdpb.RaftCmdRequest, kv
 	return resp, kvWB
 }
 func (d *peerMsgHandler) processCallBack(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
+	if resp == nil {
+		return
+	}
 	for _, proposal := range d.proposals {
 		if proposal.term == entry.Term && proposal.index == entry.Index {
 			if proposal.cb != nil {

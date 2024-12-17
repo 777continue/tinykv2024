@@ -203,7 +203,12 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	prevLogIndex := r.Prs[to].Next - 1
-	prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
+	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
+	// prevLog has been compacted(not exisit in raftlog)
+	if err != nil {
+		r.sendSnapshot(to)
+		return false
+	}
 	entries := r.RaftLog.getEntries(prevLogIndex+1, r.RaftLog.LastIndex()+1)
 	pents := make([]*pb.Entry, len(entries))
 	for i := 0; i < len(entries); i++ {
@@ -222,6 +227,25 @@ func (r *Raft) sendAppend(to uint64) bool {
 	r.msgs = append(r.msgs, msg)
 	return true
 }
+
+func (r *Raft) sendSnapshot(to uint64) {
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		// 生成 Snapshot 的工作是由 region worker 异步执行的，如果 Snapshot 还没有准备好
+		// 此时会返回 ErrSnapshotTemporarilyUnavailable 错误，此时 leader 应该放弃本次 Snapshot Request
+		// 等待下一次再请求 storage 获取 snapshot（通常来说会在下一次 heartbeat response 的时候发送 snapshot）
+		return
+	}
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		Snapshot: &snapshot,
+	})
+	r.Prs[to].Next = snapshot.Metadata.Index + 1
+}
+
 func (r *Raft) sendAppendEntriesResponse(to uint64, reject bool, idx uint64) {
 	// Your Code Here (2A).
 	msg := pb.Message{
@@ -348,6 +372,7 @@ func (r *Raft) Step(m pb.Message) error {
 	if m.Term > r.Term {
 		//fmt.Printf("r.Term = %d \n", r.Term)
 		r.becomeFollower(m.Term, None)
+		// ??? why None , I forget it
 	}
 	if m.Term != None && m.Term < r.Term {
 		return nil
@@ -385,6 +410,11 @@ func (r *Raft) stepFollower(m pb.Message) {
 			r.becomeFollower(m.Term, m.From)
 		}
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		if m.Term == r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+		r.handleSnapshot(m)
 	}
 }
 func (r *Raft) stepCandidate(m pb.Message) {
@@ -580,12 +610,8 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 
 	// Your Code Here (2A).
 	if m.Reject {
-		if m.Term > r.Term {
-			r.becomeFollower(m.Term, None)
-		} else {
-			r.Prs[m.From].Next = m.Index + 1
-			r.sendAppend(m.From)
-		}
+		r.Prs[m.From].Next = m.Index + 1
+		r.sendAppend(m.From)
 		return
 	}
 	if m.Index > r.Prs[m.From].Match {
@@ -616,6 +642,26 @@ func (r *Raft) LeaderCommit() {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	meta := m.Snapshot.Metadata
+	if meta.Index <= r.RaftLog.committed {
+		// 要从提交日志之后开始追加日志（已提交的一定会提交，不会被覆盖）
+		r.sendAppendEntriesResponse(m.From, true, r.RaftLog.committed)
+		return
+	}
+	//r.becomeFollower(m.Term, m.From)
+	r.RaftLog.dummyIndex = meta.Index + 1
+	r.RaftLog.applied = meta.Index
+	r.RaftLog.committed = meta.Index
+	r.RaftLog.stabled = meta.Index
+	r.RaftLog.entries = make([]pb.Entry, 0)
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	log.Infof("meta.Index = %v \n ", meta.Index)
+	r.Prs = make(map[uint64]*Progress)
+	for _, peer := range meta.ConfState.Nodes {
+		r.Prs[peer] = &Progress{Next: r.RaftLog.LastIndex() + 1}
+	}
+
+	r.sendAppendEntriesResponse(m.From, false, meta.Index)
 }
 
 // addNode add a new node to raft group
