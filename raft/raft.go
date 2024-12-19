@@ -746,6 +746,7 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	log.Infof("remove node \n")
 	if _, ex := r.Prs[id]; ex {
 		delete(r.Prs, id)
 		// 如果是删除节点，由于有节点被移除了，这个时候可能有新的日志可以提交
@@ -754,6 +755,5 @@ func (r *Raft) removeNode(id uint64) {
 		if r.State == StateLeader {
 			r.LeaderCommit()
 		}
-		log.Infof("remove Node")
 	}
 }

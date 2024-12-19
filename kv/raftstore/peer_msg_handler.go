@@ -72,6 +72,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 }
 func (d *peerMsgHandler) applyEntry(entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
+		d.processConfChangeEntry(entry, kvWB)
+	}
 	raftReq := &raft_cmdpb.RaftCmdRequest{}
 	err := raftReq.Unmarshal(entry.Data)
 	if err != nil {
@@ -87,7 +90,42 @@ func (d *peerMsgHandler) applyEntry(entry eraftpb.Entry, kvWB *engine_util.Write
 		return kvWB
 	}
 }
+func (d *peerMsgHandler) processConfChangeEntry(entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+	// entry.data : struct ConfChange
+	cc := &eraftpb.ConfChange{}
+	err := cc.Unmarshal(entry.Data)
+	if err != nil {
+		log.Errorf("cc Unmarshal fail")
+	}
+	region := d.Region()
+	raftReq := &raft_cmdpb.RaftCmdRequest{}
+	err = raftReq.Unmarshal(cc.Context)
+	if err != nil {
+		log.Errorf("context Unmarshal fail")
+	}
+	if region.RegionEpoch.ConfVer == raftReq.Header.RegionEpoch.ConfVer {
+		d.processCallBack(ErrResp(err), &entry)
+		return kvWB
+	}
+	switch cc.ChangeType {
+	case eraftpb.ConfChangeType_AddNode:
 
+	case eraftpb.ConfChangeType_RemoveNode:
+		if d.PeerId() == cc.NodeId {
+			region.Peers = append(region.Peers[:n], region.Peers[n+1:]...)
+			region.RegionEpoch.ConfVer++
+		}
+	}
+
+}
+func (d *peerMsgHandler) IsPeerExist(id uint64) (bool, uint64) {
+	for i, peer := range d.Region().Peers {
+		if peer.Id == id {
+			return true, uint64(i)
+		}
+	}
+	return false, 0
+}
 func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
 	adminReq := raftReq.AdminRequest
 	resp := &raft_cmdpb.RaftCmdResponse{
@@ -116,9 +154,11 @@ func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvW
 		}
 		resp.AdminResponse = adminResp
 	case raft_cmdpb.AdminCmdType_ChangePeer:
+		raftcmd, _ := raftReq.Marshal()
 		confChange := eraftpb.ConfChange{
 			ChangeType: adminReq.ChangePeer.ChangeType,
 			NodeId:     adminReq.ChangePeer.Peer.Id,
+			Context:    raftcmd,
 		}
 		d.RaftGroup.ProposeConfChange(confChange)
 		adminResp := &raft_cmdpb.AdminResponse{
@@ -201,6 +241,7 @@ func (d *peerMsgHandler) processCallBack(resp *raft_cmdpb.RaftCmdResponse, entry
 		}
 	}
 }
+
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
