@@ -90,6 +90,9 @@ func (d *peerMsgHandler) applyEntry(entry eraftpb.Entry, kvWB *engine_util.Write
 
 func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
 	adminReq := raftReq.AdminRequest
+	resp := &raft_cmdpb.RaftCmdResponse{
+		Header: &raft_cmdpb.RaftResponseHeader{},
+	}
 	switch adminReq.CmdType {
 	case raft_cmdpb.AdminCmdType_CompactLog:
 		// 要压缩的日志大于上次压缩到的最后一条日志
@@ -99,9 +102,36 @@ func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvW
 				Term:  adminReq.CompactLog.CompactTerm,
 			}
 			d.ScheduleCompactLog(adminReq.CompactLog.CompactIndex)
+			adminResp := &raft_cmdpb.AdminResponse{
+				CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
+				CompactLog: &raft_cmdpb.CompactLogResponse{},
+			}
+			resp.AdminResponse = adminResp
 		}
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+		d.RaftGroup.TransferLeader(adminReq.TransferLeader.Peer.Id)
+		adminResp := &raft_cmdpb.AdminResponse{
+			CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
+			TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
+		}
+		resp.AdminResponse = adminResp
+	case raft_cmdpb.AdminCmdType_ChangePeer:
+		confChange := eraftpb.ConfChange{
+			ChangeType: adminReq.ChangePeer.ChangeType,
+			NodeId:     adminReq.ChangePeer.Peer.Id,
+		}
+		d.RaftGroup.ProposeConfChange(confChange)
+		adminResp := &raft_cmdpb.AdminResponse{
+			CmdType: raft_cmdpb.AdminCmdType_ChangePeer,
+			ChangePeer: &raft_cmdpb.ChangePeerResponse{
+				Region: &metapb.Region{},
+			},
+		}
+		resp.AdminResponse = adminResp
+
+	case raft_cmdpb.AdminCmdType_Split:
 	}
-	return nil, kvWB
+	return resp, kvWB
 }
 
 func (d *peerMsgHandler) processCommonCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {

@@ -70,6 +70,8 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	preSoftState *SoftState
+	preHardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
@@ -77,6 +79,11 @@ func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
 	rn := &RawNode{
 		Raft: newRaft(config), // 创建底层 Raft 节点
+	}
+	rn.preHardState, _, _ = config.Storage.InitialState()
+	rn.preSoftState = &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
 	}
 	return rn, nil
 }
@@ -151,7 +158,31 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 	}
+	if !rn.isSoftStateEqual() {
+		rd.SoftState = &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
+		//log
+		rn.preSoftState = rd.SoftState
+	}
+	if !rn.isSoftStateEqual() {
+		rd.HardState = pb.HardState{
+			Term:   rn.Raft.Term,
+			Vote:   rn.Raft.Vote,
+			Commit: rn.Raft.RaftLog.committed,
+		}
+		rn.preHardState = rd.HardState
+	}
 	return rd
+}
+
+// softStateUpdate 检查 SoftState 是否有更新
+func (rn *RawNode) isSoftStateEqual() bool {
+	return rn.Raft.Lead == rn.preSoftState.Lead && rn.Raft.State == rn.preSoftState.RaftState
+}
+
+// hardStateUpdate 检查 HardState 是否有更新
+func (rn *RawNode) isHardStateEqual() bool {
+	return rn.Raft.Term == rn.preHardState.Term && rn.Raft.Vote == rn.preHardState.Vote &&
+		rn.Raft.RaftLog.committed == rn.preHardState.Commit
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.

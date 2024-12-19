@@ -189,6 +189,7 @@ func newRaft(c *Config) *Raft {
 		randElectionTimeout: c.ElectionTick + rand.Intn(c.ElectionTick),
 		heartbeatElapsed:    0,
 		electionElapsed:     0,
+		leadTransferee:      0,
 	}
 
 	r.Prs = make(map[uint64]*Progress)
@@ -335,6 +336,8 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Lead = lead
 	r.Vote = None
+	// transfer is over
+	r.leadTransferee = None
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -352,6 +355,7 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
+	r.Vote = None
 	r.Lead = r.id
 	for id := range r.Prs {
 		r.Prs[id].Next = r.RaftLog.LastIndex() + 1 // 初始化为 leader 的最后一条日志索引（后续出现冲突会往前移动）
@@ -415,6 +419,13 @@ func (r *Raft) stepFollower(m pb.Message) {
 			r.becomeFollower(m.Term, m.From)
 		}
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow()
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	}
 }
 func (r *Raft) stepCandidate(m pb.Message) {
@@ -432,6 +443,13 @@ func (r *Raft) stepCandidate(m pb.Message) {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResponse(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow()
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	}
 }
 func (r *Raft) stepLeader(m pb.Message) {
@@ -451,6 +469,8 @@ func (r *Raft) stepLeader(m pb.Message) {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 	}
 }
 func (r *Raft) handleHup() {
@@ -619,6 +639,9 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		r.Prs[m.From].Next = m.Index + 1
 		r.LeaderCommit()
 	}
+	if r.leadTransferee == m.From && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		r.sendTimeoutNow(m.From)
+	}
 }
 func (r *Raft) LeaderCommit() {
 	match := make(uint64Slice, len(r.Prs))
@@ -633,8 +656,10 @@ func (r *Raft) LeaderCommit() {
 	half := match[(len(r.Prs)-1)/2]
 	if half > r.RaftLog.committed {
 		if halfTerm, _ := r.RaftLog.Term(half); halfTerm == r.Term {
-			r.RaftLog.committed = half
-			r.broadcastAppend()
+			if r.RaftLog.committed < half {
+				r.RaftLog.committed = half
+				r.broadcastAppend()
+			}
 		}
 	}
 }
@@ -664,12 +689,71 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.sendAppendEntriesResponse(m.From, false, meta.Index)
 }
 
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	// m.From: peer which leader will transfer to
+	if _, ex := r.Prs[m.From]; !ex {
+		return
+	}
+	if m.From == r.id {
+		return
+	}
+	if r.leadTransferee != None {
+		if r.leadTransferee == m.From {
+			return
+		}
+		r.leadTransferee = None
+	}
+	r.leadTransferee = m.From
+	//r.transferElapsed = 0
+	if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		// 日志是最新的，直接发送 TimeoutNow 消息
+		r.sendTimeoutNow(m.From)
+	} else {
+		// 日志不是最新的，则帮助 leadTransferee 匹配最新的日志
+		r.sendAppend(m.From)
+	}
+}
+
+func (r *Raft) sendTimeoutNow(peer uint64) {
+	// Your Code Here (2A).
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		From:    r.id,
+		To:      peer,
+		Term:    r.Term,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) handleTimeoutNow() {
+	// Your Code Here (2A).
+	if _, ex := r.Prs[r.id]; !ex {
+		return
+	}
+	if err := r.Step(pb.Message{MsgType: pb.MessageType_MsgHup}); err != nil {
+		log.Errorf("handleTimeoutNow error")
+	}
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ex := r.Prs[id]; !ex {
+		r.Prs[id] = &Progress{Next: r.RaftLog.LastIndex() + 1}
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ex := r.Prs[id]; ex {
+		delete(r.Prs, id)
+		// 如果是删除节点，由于有节点被移除了，这个时候可能有新的日志可以提交
+		// 这是必要的，因为 TinyKV 只有在 handleAppendRequestResponse 的时候才会判断是否有新的日志可以提交
+		// 如果节点被移除了，则可能会因为缺少这个节点的回复，导致可以提交的日志无法在当前任期被提交
+		if r.State == StateLeader {
+			r.LeaderCommit()
+		}
+		log.Infof("remove Node")
+	}
 }
