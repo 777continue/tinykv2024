@@ -111,12 +111,38 @@ func (d *peerMsgHandler) processConfChangeEntry(entry eraftpb.Entry, kvWB *engin
 	case eraftpb.ConfChangeType_AddNode:
 
 	case eraftpb.ConfChangeType_RemoveNode:
-		if d.PeerId() == cc.NodeId {
-			region.Peers = append(region.Peers[:n], region.Peers[n+1:]...)
-			region.RegionEpoch.ConfVer++
+		ex, idx := d.IsPeerExist(cc.NodeId)
+		if !ex {
+			return kvWB
 		}
+		/*if d.PeerId() == cc.NodeId {
+			d.destroyPeer()
+			return kvWB
+		}*/
+		// invoke peer_destroyPeer
+		log.Infof("prev peer length : %v", len(region.Peers))
+		// new region state
+		region.Peers = append(region.Peers[:idx], region.Peers[idx+1:]...)
+		region.RegionEpoch.ConfVer++
+		log.Infof("last peer length : %v", len(region.Peers))
+		// update db_RegionLocalState
+		meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
+		// update context_metadata
+		storeMeta := d.ctx.storeMeta
+		storeMeta.Lock()
+		defer storeMeta.Unlock()
+		storeMeta.regions[region.Id] = region
+		log.Infof("meta peer length : %v", len(storeMeta.regions[region.Id].Peers))
 	}
-
+	resp := &raft_cmdpb.RaftCmdResponse{
+		Header: &raft_cmdpb.RaftResponseHeader{},
+		AdminResponse: &raft_cmdpb.AdminResponse{
+			CmdType:    raft_cmdpb.AdminCmdType_ChangePeer,
+			ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: region},
+		},
+	}
+	d.processCallBack(resp, &entry)
+	return kvWB
 }
 func (d *peerMsgHandler) IsPeerExist(id uint64) (bool, uint64) {
 	for i, peer := range d.Region().Peers {
