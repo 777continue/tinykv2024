@@ -367,6 +367,7 @@ func TestScanLimitZero4C(t *testing.T) {
 
 // TestScanAll4C start at the beginning of the DB and read all pairs, respecting the timestamp.
 func TestScanAll4C(t *testing.T) {
+
 	builder := builderForScan(t)
 
 	cmd := builder.scanRequest([]byte{0}, 10000)
