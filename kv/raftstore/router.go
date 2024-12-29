@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -34,6 +35,7 @@ func newRouter(storeSender chan<- message.Msg) *router {
 
 func (pr *router) get(regionID uint64) *peerState {
 	v, ok := pr.peers.Load(regionID)
+	//fmt.Printf("router.peers : %+v\n", pr.peers)
 	if ok {
 		return v.(*peerState)
 	}
@@ -58,9 +60,15 @@ func (pr *router) close(regionID uint64) {
 }
 
 func (pr *router) send(regionID uint64, msg message.Msg) error {
+	//fmt.Printf("router send :: %+v\n", msg)
 	msg.RegionID = regionID
 	p := pr.get(regionID)
-	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
+	if p == nil {
+		fmt.Printf("errPeerNotFound111\n")
+		return errPeerNotFound
+	}
+	if atomic.LoadUint32(&p.closed) == 1 {
+		fmt.Printf("errPeerNotFound222\n")
 		return errPeerNotFound
 	}
 	pr.peerSender <- msg

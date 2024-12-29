@@ -226,6 +226,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Commit:  r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
+	//fmt.Printf("sendAppendEntry to peer_%d\n", to)
 	return true
 }
 
@@ -373,6 +374,7 @@ func (r *Raft) becomeLeader() {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	//fmt.Printf("%+v", m)
 	if m.Term > r.Term {
 		//fmt.Printf("r.Term = %d \n", r.Term)
 		r.becomeFollower(m.Term, None)
@@ -381,14 +383,6 @@ func (r *Raft) Step(m pb.Message) error {
 	if m.Term != None && m.Term < r.Term {
 		return nil
 	}
-	/*v := reflect.ValueOf(m)
-	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		fieldName := t.Field(i).Name
-		fieldValue := v.Field(i).Interface()
-		fmt.Printf("%s:%v ", fieldName, fieldValue)
-	}
-	fmt.Println()*/
 	switch r.State {
 	case StateFollower:
 		r.stepFollower(m)
@@ -507,12 +501,14 @@ func (r *Raft) handlePropose(m pb.Message) {
 		entry.Term = r.Term
 		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 	}
+	//fmt.Printf("propose_id : %d\n", r.id)
 	r.Prs[r.id].Next = lastIndex + uint64(len(entries)) + 1
 	r.Prs[r.id].Match = lastIndex + uint64(len(entries))
 	r.broadcastAppend()
 }
 func (r *Raft) broadcastAppend() {
 	for peer := range r.Prs {
+		//fmt.Printf("broadcastAppend peer_%d\n", peer)
 		if peer != r.id {
 			r.sendAppend(peer)
 		}
@@ -746,7 +742,7 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
-	log.Infof("remove node \n")
+	//log.Infof("remove node \n")
 	if _, ex := r.Prs[id]; ex {
 		delete(r.Prs, id)
 		// 如果是删除节点，由于有节点被移除了，这个时候可能有新的日志可以提交

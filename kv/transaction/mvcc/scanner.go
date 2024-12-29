@@ -2,7 +2,6 @@ package mvcc
 
 import (
 	"bytes"
-	"fmt"
 
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 )
@@ -73,7 +72,7 @@ func (scan *Scanner) Next() ([]byte, []byte, error) {
 	}
 	if write.Kind == WriteKindPut {
 		val, err := scan.txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, write.StartTS))
-		fmt.Printf("scan.Next : key : %d, val : %d\n", key, val)
+		//fmt.Printf("scan.Next : key : %d, val : %d\n", key, val)
 		return key, val, err
 	}
 	if write.Kind == WriteKindDelete {

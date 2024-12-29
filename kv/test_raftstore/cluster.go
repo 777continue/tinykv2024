@@ -190,6 +190,7 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		regionID := region.GetId()
 		req := NewRequest(regionID, region.RegionEpoch, reqs)
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
+		//log.Infof("request : %v\n response : %v\n", req, resp)
 		if resp == nil {
 			// it should be timeouted innerly
 			log.Errorf("resp == nil")
