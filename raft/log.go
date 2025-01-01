@@ -62,12 +62,13 @@ func newLog(storage Storage) *RaftLog {
 	last, _ := storage.LastIndex()
 	entries, _ := storage.Entries(first, last+1)
 	return &RaftLog{
-		storage:    storage,
-		entries:    entries,
-		committed:  hardstat.Commit,
-		stabled:    last,
-		applied:    first - 1,
-		dummyIndex: first,
+		storage:         storage,
+		entries:         entries,
+		committed:       hardstat.Commit,
+		stabled:         last,
+		applied:         first - 1,
+		dummyIndex:      first,
+		pendingSnapshot: nil,
 	}
 }
 

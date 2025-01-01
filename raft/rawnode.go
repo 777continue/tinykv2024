@@ -165,13 +165,13 @@ func (rn *RawNode) Ready() Ready {
 		//log
 		rn.preSoftState = rd.SoftState
 	}
-	if !rn.isSoftStateEqual() {
-		rd.HardState = pb.HardState{
-			Term:   rn.Raft.Term,
-			Vote:   rn.Raft.Vote,
-			Commit: rn.Raft.RaftLog.committed,
-		}
-		rn.preHardState = rd.HardState
+	if !rn.isHardStateEqual() {
+		hardStat := rn.Raft.hardState()
+		rd.HardState = hardStat
+		rn.preHardState = hardStat
+	}
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 	return rd
 }
@@ -190,7 +190,12 @@ func (rn *RawNode) isHardStateEqual() bool {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return len(rn.Raft.msgs) > 0 ||
+	hardSt := rn.Raft.hardState()
+	return (!IsEmptyHardState(hardSt) &&
+		!rn.isHardStateEqual()) ||
+		!rn.isSoftStateEqual() ||
+		!IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) ||
+		len(rn.Raft.msgs) > 0 ||
 		len(rn.Raft.RaftLog.unstableEntries()) > 0 ||
 		len(rn.Raft.RaftLog.nextEnts()) > 0
 }
@@ -199,6 +204,9 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	if !IsEmptyHardState(rd.HardState) {
+		rn.preHardState = rd.HardState
+	}
 	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled += uint64(len(rd.Entries)) //stabled 指针变更；
 	}
@@ -206,6 +214,8 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.applied += uint64(len(rd.CommittedEntries)) //applied 指针变更；
 	}
 	rn.Raft.msgs = nil //清空 rn.Raft.msgs；
+	rn.Raft.RaftLog.maybeCompact()
+	rn.Raft.RaftLog.pendingSnapshot = nil
 }
 
 // GetProgress return the Progress of this node and its peers, if this

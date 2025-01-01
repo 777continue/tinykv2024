@@ -162,6 +162,7 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+	heartbeatResp    map[uint64]bool
 }
 
 // newRaft return a raft peer with the given config
@@ -314,14 +315,35 @@ func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	r.electionElapsed++
 	if r.State == StateLeader {
 		r.heartbeatElapsed++
+		hbrNum := len(r.heartbeatResp)
+		total := len(r.Prs)
+		// 选举超时
+		if r.electionElapsed >= r.electionTimeout {
+			r.electionElapsed = 0
+			r.heartbeatResp = make(map[uint64]bool)
+			r.heartbeatResp[r.id] = true
+			// 心跳回应数不超过一半，说明成为孤岛，重新开始选举
+			if hbrNum*2 <= total {
+				r.handleHup()
+			}
+			// leader 转移失败，目标节点可能挂了，放弃转移
+			if r.leadTransferee != None {
+				r.leadTransferee = None
+			}
+		}
+		// 心跳超时
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			// 发送心跳
 			r.heartbeatElapsed = 0
-			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgBeat})
+			err := r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
+			if err != nil {
+				return
+			}
 		}
 	} else {
-		r.electionElapsed++
 		if r.electionElapsed >= r.randElectionTimeout {
 			r.electionElapsed = 0
 			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgHup})
@@ -751,5 +773,13 @@ func (r *Raft) removeNode(id uint64) {
 		if r.State == StateLeader {
 			r.LeaderCommit()
 		}
+	}
+}
+func (r *Raft) softState() *SoftState { return &SoftState{Lead: r.Lead, RaftState: r.State} }
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
 	}
 }
