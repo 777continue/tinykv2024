@@ -75,7 +75,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		//log.Infof("length CommittedEntries = %v", len(rd.CommittedEntries))
 		for _, ent := range rd.CommittedEntries {
 			//log.Infof("HandleRaftReady() apply entry : %v", ent)
-			kvWB = d.applyEntry(ent, kvWB)
+			kvWB = d.applyEntry(&ent, kvWB)
 			if d.stopped {
 				return
 			}
@@ -91,7 +91,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	d.RaftGroup.Advance(rd)
 
 }
-func (d *peerMsgHandler) applyEntry(entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+func (d *peerMsgHandler) applyEntry(entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
 		return d.processConfChangeEntry(entry, kvWB)
 
@@ -105,14 +105,14 @@ func (d *peerMsgHandler) applyEntry(entry eraftpb.Entry, kvWB *engine_util.Write
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	WB := &engine_util.WriteBatch{}
 	if raftReq.AdminRequest != nil {
-		resp, WB = d.processAdminCmd(raftReq, kvWB)
+		WB = d.processAdminCmd(raftReq, entry, kvWB)
 	} else {
-		resp, WB = d.processCommonCmd(raftReq, kvWB)
+		WB = d.processCommonCmd(raftReq, entry, kvWB)
+		d.processCallBack(resp, entry)
 	}
-	d.processCallBack(resp, &entry)
 	return WB
 }
-func (d *peerMsgHandler) processConfChangeEntry(entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+func (d *peerMsgHandler) processConfChangeEntry(entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	// entry.data : struct ConfChange
 	cc := &eraftpb.ConfChange{}
 	err := cc.Unmarshal(entry.Data)
@@ -171,7 +171,8 @@ func (d *peerMsgHandler) processConfChangeEntry(entry eraftpb.Entry, kvWB *engin
 			ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: region},
 		},
 	}
-	d.processCallBack(resp, &entry)
+	d.processCallBack(resp, entry)
+	d.notifyHeartbeatScheduler(d.Region(), d.peer)
 	return kvWB
 }
 func (d *peerMsgHandler) IsPeerExist(id uint64) (bool, uint64) {
@@ -183,7 +184,7 @@ func (d *peerMsgHandler) IsPeerExist(id uint64) (bool, uint64) {
 	return false, 0
 }
 
-func (d *peerMsgHandler) processCommonCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
+func (d *peerMsgHandler) processCommonCmd(raftReq *raft_cmdpb.RaftCmdRequest, entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	reqs := raftReq.Requests
 	resp := &raft_cmdpb.RaftCmdResponse{
 		Header:    &raft_cmdpb.RaftResponseHeader{},
@@ -227,9 +228,10 @@ func (d *peerMsgHandler) processCommonCmd(raftReq *raft_cmdpb.RaftCmdRequest, kv
 			})
 		}
 	}
-	return resp, kvWB
+	d.processCallBack(resp, entry)
+	return kvWB
 }
-func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
+func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	adminReq := raftReq.AdminRequest
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	switch adminReq.CmdType {
@@ -248,6 +250,24 @@ func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvW
 			resp.AdminResponse = adminResp
 		}
 	case raft_cmdpb.AdminCmdType_Split:
+		if raftReq.Header.RegionId != d.regionId {
+			resp = ErrResp(&util.ErrRegionNotFound{RegionId: raftReq.Header.RegionId})
+			break
+		}
+		err := util.CheckRegionEpoch(raftReq, d.Region(), true)
+		if err != nil {
+			resp = ErrResp(err)
+			break
+		}
+		err = util.CheckKeyInRegion(adminReq.Split.SplitKey, d.Region())
+		if err != nil {
+			resp = ErrResp(err)
+			break
+		}
+		if len(adminReq.Split.NewPeerIds) != len(d.Region().Peers) {
+			resp = ErrResp(errors.Errorf("length of NewPeerIds != length of Peers"))
+			break
+		}
 		// copy peers
 		cpPeers := make([]*metapb.Peer, 0)
 		for i, pr := range d.Region().Peers {
@@ -299,7 +319,8 @@ func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, kvW
 		d.notifyHeartbeatScheduler(d.Region(), d.peer)
 		d.notifyHeartbeatScheduler(newRegion, newPeer)
 	}
-	return resp, kvWB
+	d.processCallBack(resp, entry)
+	return kvWB
 }
 func (d *peerMsgHandler) notifyHeartbeatScheduler(region *metapb.Region, peer *peer) {
 	clonedRegion := new(metapb.Region)
@@ -322,9 +343,9 @@ func (d *peerMsgHandler) processCallBack(resp *raft_cmdpb.RaftCmdResponse, entry
 		if proposal.term == entry.Term && proposal.index == entry.Index {
 			if proposal.cb != nil {
 				proposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-				proposal.cb.Done(resp)
 				//log.Infof("return resp")
 			}
+			proposal.cb.Done(resp)
 			d.proposals = d.proposals[1:]
 		} else if proposal.term < entry.Term || proposal.index < entry.Index {
 			// handle old proposal -> delete and continue
@@ -332,6 +353,7 @@ func (d *peerMsgHandler) processCallBack(resp *raft_cmdpb.RaftCmdResponse, entry
 			d.proposals = d.proposals[1:]
 		} else {
 			// handle future proposal -> may be the proposal is callbacked
+			return
 		}
 	}
 }
