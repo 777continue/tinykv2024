@@ -5,7 +5,6 @@ import (
 	"sync/atomic"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
-	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap/errors"
@@ -63,11 +62,11 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	msg.RegionID = regionID
 	p := pr.get(regionID)
 	if p == nil {
-		log.Errorf("errPeerNotFound111\n")
+		//log.Errorf("errPeerNotFound111\n")
 		return errPeerNotFound
 	}
 	if atomic.LoadUint32(&p.closed) == 1 {
-		log.Errorf("errPeerNotFound222\n")
+		//log.Errorf("errPeerNotFound222\n")
 		return errPeerNotFound
 	}
 	pr.peerSender <- msg

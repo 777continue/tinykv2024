@@ -193,12 +193,12 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		//log.Infof("request : %v\n response : %v\n", req, resp)
 		if resp == nil {
 			// it should be timeouted innerly
-			log.Errorf("resp == nil")
+			//log.Errorf("resp == nil")
 			SleepMS(100)
 			continue
 		}
 		if resp.Header.Error != nil {
-			log.Errorf("resp.Header.Error != nil ")
+			//log.Errorf("resp.Header.Error != nil ")
 			SleepMS(100)
 			continue
 		}
@@ -218,7 +218,7 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 	leader := c.LeaderOfRegion(regionID)
 	for {
 		if time.Since(startTime) > timeout {
-			log.Errorf("timeout")
+			//log.Errorf("timeout")
 			return nil, nil
 		}
 		if leader == nil {

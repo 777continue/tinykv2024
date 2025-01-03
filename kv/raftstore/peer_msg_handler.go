@@ -3,7 +3,6 @@ package raftstore
 import (
 	"fmt"
 	"reflect"
-	"runtime/debug"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -102,8 +101,7 @@ func (d *peerMsgHandler) applyEntry(entry *eraftpb.Entry, kvWB *engine_util.Writ
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	WB := &engine_util.WriteBatch{}
 	if err != nil {
-		stackInfo := debug.Stack()
-		log.Errorf("unmarshal raft command error %v, %v, %s", err, entry, stackInfo)
+		log.Errorf("unmarshal raft command error %v, %v, %s", err, entry)
 	}
 	// TODO
 	if raftReq.Header != nil {
@@ -379,6 +377,7 @@ func (d *peerMsgHandler) processCallBack(resp *raft_cmdpb.RaftCmdResponse, entry
 			d.proposals = d.proposals[1:]
 		} else if proposal.term < entry.Term || proposal.index < entry.Index {
 			// handle old proposal -> delete and continue
+			//NotifyStaleReq(entry.Term, proposal.cb)
 			proposal.cb.Done(ErrRespStaleCommand(proposal.term))
 			d.proposals = d.proposals[1:]
 		} else {
@@ -492,6 +491,16 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 func (d *peerMsgHandler) proposeAdminCmd(raftCmd *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	adminCmd := raftCmd.AdminRequest
 	switch adminCmd.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		data, err := raftCmd.Marshal()
+		if err != nil {
+			log.Panic(err)
+			cb.Done(ErrResp(err))
+			return
+		}
+		p := &proposal{index: d.nextProposalIndex(), term: d.Term(), cb: cb}
+		d.proposals = append(d.proposals, p)
+		d.RaftGroup.Propose(data)
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 		d.RaftGroup.TransferLeader(adminCmd.TransferLeader.Peer.Id)
 		adminResp := &raft_cmdpb.AdminResponse{
