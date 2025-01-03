@@ -86,6 +86,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			log.Errorf("set apply state error %v", err)
 		}
 		kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
+
 	}
 
 	d.RaftGroup.Advance(rd)
@@ -98,12 +99,24 @@ func (d *peerMsgHandler) applyEntry(entry *eraftpb.Entry, kvWB *engine_util.Writ
 	}
 	raftReq := &raft_cmdpb.RaftCmdRequest{}
 	err := raftReq.Unmarshal(entry.Data)
+	resp := &raft_cmdpb.RaftCmdResponse{}
+	WB := &engine_util.WriteBatch{}
 	if err != nil {
 		stackInfo := debug.Stack()
 		log.Errorf("unmarshal raft command error %v, %v, %s", err, entry, stackInfo)
 	}
-	resp := &raft_cmdpb.RaftCmdResponse{}
-	WB := &engine_util.WriteBatch{}
+	// TODO
+	if raftReq.Header != nil {
+		fromEpoch := raftReq.GetHeader().GetRegionEpoch()
+		if fromEpoch != nil {
+			if util.IsEpochStale(fromEpoch, d.Region().RegionEpoch) {
+				resp := ErrResp(&util.ErrEpochNotMatch{})
+				d.processCallBack(resp, entry)
+				return kvWB
+			}
+		}
+	}
+
 	if raftReq.AdminRequest != nil {
 		WB = d.processAdminCmd(raftReq, entry, kvWB)
 	} else {
@@ -242,13 +255,21 @@ func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, ent
 				Index: adminReq.CompactLog.CompactIndex,
 				Term:  adminReq.CompactLog.CompactTerm,
 			}
-			d.ScheduleCompactLog(adminReq.CompactLog.CompactIndex)
-			adminResp := &raft_cmdpb.AdminResponse{
-				CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
-				CompactLog: &raft_cmdpb.CompactLogResponse{},
+			err := kvWB.SetMeta(meta.ApplyStateKey(d.Region().GetId()), d.peerStorage.applyState)
+			if err != nil {
+				log.Panic(err)
 			}
-			resp.AdminResponse = adminResp
+			d.ScheduleCompactLog(adminReq.CompactLog.CompactIndex)
 		}
+		adminResp := &raft_cmdpb.AdminResponse{
+			CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
+			CompactLog: &raft_cmdpb.CompactLogResponse{},
+		}
+		resp = &raft_cmdpb.RaftCmdResponse{
+			Header:        &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: adminResp,
+		}
+
 	case raft_cmdpb.AdminCmdType_Split:
 		if raftReq.Header.RegionId != d.regionId {
 			resp = ErrResp(&util.ErrRegionNotFound{RegionId: raftReq.Header.RegionId})
@@ -305,6 +326,15 @@ func (d *peerMsgHandler) processAdminCmd(raftReq *raft_cmdpb.RaftCmdRequest, ent
 		}
 		newPeer.peerStorage.SetRegion(newRegion)
 		d.ctx.router.register(newPeer)
+
+		startMsg := message.Msg{
+			RegionID: adminReq.Split.NewRegionId,
+			Type:     message.MsgTypeStart,
+		}
+		err = d.ctx.router.send(adminReq.Split.NewRegionId, startMsg)
+		if err != nil {
+			log.Panic(err)
+		}
 
 		resp = &raft_cmdpb.RaftCmdResponse{
 			Header: &raft_cmdpb.RaftResponseHeader{},
